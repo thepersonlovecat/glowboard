@@ -44,6 +44,11 @@ enum Rasterizer {
             return LEDGrid(cols: cols, rows: rows, lit: [Bool](repeating: false, count: cols * rows))
         }
 
+        // CGContext origin is bottom-left; flip so UIKit draws top-down
+        // and memory row 0 matches the top row of the panel.
+        ctx.translateBy(x: 0, y: CGFloat(rows))
+        ctx.scaleBy(x: 1, y: -1)
+
         UIGraphicsPushContext(ctx)
         let startY = (CGFloat(rows) - contentH) / 2
         for (i, line) in lines.enumerated() {

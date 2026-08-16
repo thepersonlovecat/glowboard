@@ -5,8 +5,9 @@ import SwiftUI
 struct LEDBoardView: View {
     @ObservedObject var settings: BoardSettings
 
-    /// Target spacing between LED dots, in points.
-    private let dotPitch: CGFloat = 7
+    /// Number of LED rows across the panel height. Keeping this constant makes
+    /// the board look identical on every screen size (dots scale with height).
+    private let targetRows: CGFloat = 44
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
@@ -21,10 +22,10 @@ struct LEDBoardView: View {
     }
 
     private func draw(context: inout GraphicsContext, size: CGSize, time: Double) {
-        let rows = max(8, Int(size.height / dotPitch))
-        let screenCols = max(8, Int(size.width / dotPitch))
+        let pitchY = size.height / targetRows
+        let rows = max(8, Int(targetRows))
+        let screenCols = max(8, Int(size.width / pitchY))
         let pitchX = size.width / CGFloat(screenCols)
-        let pitchY = size.height / CGFloat(rows)
         let speed = settings.speed
 
         // MARK: Effect state
@@ -63,7 +64,8 @@ struct LEDBoardView: View {
                      isMarquee: isMarquee, time: time, speed: speed, color: color)
         } else {
             drawNeon(context: &context, size: size, text: renderText,
-                     isMarquee: isMarquee, time: time, speed: speed, color: color)
+                     isMarquee: isMarquee, time: time, speed: speed,
+                     dotPitch: pitchY, color: color)
         }
     }
 
@@ -118,7 +120,8 @@ struct LEDBoardView: View {
 
     private func drawNeon(context: inout GraphicsContext, size: CGSize,
                           text: String, isMarquee: Bool,
-                          time: Double, speed: Double, color: Color) {
+                          time: Double, speed: Double,
+                          dotPitch: CGFloat, color: Color) {
         let uiColor = UIColor(color)
         let image = RasterCache.shared.neonImage(text: text, font: settings.font,
                                                  sizeFraction: settings.size,
