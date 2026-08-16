@@ -151,7 +151,7 @@ struct LEDBoardView: View {
             x = size.width - scrolled
         }
 
-        let rect = CGRect(x: x - padding, y: -padding, size: image.size)
+        let rect = CGRect(origin: CGPoint(x: x - padding, y: -padding), size: image.size)
         context.draw(Image(uiImage: image), in: rect)
     }
 }
