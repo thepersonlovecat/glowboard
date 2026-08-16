@@ -9,8 +9,28 @@ struct LEDBoardView: View {
     /// the board look identical on every screen size (dots scale with height).
     private let targetRows: CGFloat = 44
 
+    /// Redraw rate matched to what the effect actually needs, instead of
+    /// repainting at full display refresh (up to 120 Hz) all the time.
+    private var frameInterval: Double {
+        switch settings.effect {
+        case .marquee:
+            if settings.look == .dot {
+                // Offset moves in whole dots, so rendering faster than the dot
+                // rate produces identical frames.
+                return 1.0 / min(60.0, 6 + settings.speed * 7)
+            }
+            return 1.0 / 60.0 // neon scrolls smoothly; each frame is one image draw
+        case .blink:
+            return 0.1
+        case .alternate:
+            return 0.25
+        case .static:
+            return settings.rainbow ? 1.0 / 30.0 : 1.0
+        }
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+        TimelineView(.periodic(from: .now, by: frameInterval)) { timeline in
             Canvas { ctx, size in
                 var context = ctx
                 draw(context: &context, size: size,
@@ -54,12 +74,12 @@ struct LEDBoardView: View {
             : text
 
         let color: Color = settings.rainbow
-            ? Color(hue: (time * 0.05 * speed).truncatingRemainder(dividingBy: 1),
+            ? Color(hue: rainbowHue(time: time, speed: speed),
                     saturation: 0.9, brightness: 1.0)
             : settings.textColor
 
         if settings.look == .dot {
-            drawDots(context: &context, size: size, rows: rows, screenCols: screenCols,
+            drawDots(context: &context, rows: rows, screenCols: screenCols,
                      pitchX: pitchX, pitchY: pitchY, text: renderText,
                      isMarquee: isMarquee, time: time, speed: speed, color: color)
         } else {
@@ -69,17 +89,25 @@ struct LEDBoardView: View {
         }
     }
 
+    /// Hue is quantized so cached content (e.g. the neon glow image) stays
+    /// valid across frames instead of being rebuilt for every tiny hue step.
+    private func rainbowHue(time: Double, speed: Double) -> Double {
+        let hue = (time * 0.05 * speed).truncatingRemainder(dividingBy: 1)
+        return (hue * 60).rounded() / 60
+    }
+
     // MARK: - Dot matrix
 
-    private func drawDots(context: inout GraphicsContext, size: CGSize,
+    private func drawDots(context: inout GraphicsContext,
                           rows: Int, screenCols: Int,
                           pitchX: CGFloat, pitchY: CGFloat,
                           text: String, isMarquee: Bool,
                           time: Double, speed: Double, color: Color) {
-        let grid = RasterCache.shared.grid(text: text, font: settings.font,
-                                           sizeFraction: settings.size,
-                                           rows: rows,
-                                           fixedCols: isMarquee ? nil : screenCols)
+        let (grid, litPath) = RasterCache.shared.litDots(text: text, font: settings.font,
+                                                         sizeFraction: settings.size,
+                                                         rows: rows,
+                                                         fixedCols: isMarquee ? nil : screenCols,
+                                                         pitchX: pitchX, pitchY: pitchY)
 
         // Horizontal scroll offset (in dots) for the marquee effect.
         var textLeftEdge = 0
@@ -91,29 +119,14 @@ struct LEDBoardView: View {
         }
 
         // Faint unlit dots give the panel a realistic LED texture.
-        var unlit = Path()
-        var litPath = Path()
-        let dotW = pitchX * 0.72
-        let dotH = pitchY * 0.72
-
-        for r in 0..<rows {
-            let y = CGFloat(r) * pitchY + (pitchY - dotH) / 2
-            for c in 0..<screenCols {
-                let rect = CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
-                                  y: y, width: dotW, height: dotH)
-                let sourceCol = c - textLeftEdge
-                let isLit = sourceCol >= 0 && sourceCol < grid.cols
-                    && grid.lit[r * grid.cols + sourceCol]
-                if isLit {
-                    litPath.addEllipse(in: rect)
-                } else {
-                    unlit.addEllipse(in: rect)
-                }
-            }
-        }
-
+        let unlit = RasterCache.shared.unlitDots(cols: screenCols, rows: rows,
+                                                 pitchX: pitchX, pitchY: pitchY)
         context.fill(unlit, with: .color(color.opacity(0.07)))
-        context.fill(litPath, with: .color(color))
+
+        // Cached dot path; scrolling is just a translation.
+        var scrolledContext = context
+        scrolledContext.translateBy(x: CGFloat(textLeftEdge) * pitchX, y: 0)
+        scrolledContext.fill(litPath, with: .color(color))
     }
 
     // MARK: - Neon glow
@@ -122,30 +135,23 @@ struct LEDBoardView: View {
                           text: String, isMarquee: Bool,
                           time: Double, speed: Double,
                           dotPitch: CGFloat, color: Color) {
-        let uiColor = UIColor(color)
-        let image = RasterCache.shared.neonImage(text: text, font: settings.font,
-                                                 sizeFraction: settings.size,
-                                                 panelSize: size,
-                                                 fixedWidth: !isMarquee,
-                                                 color: uiColor)
-        let pointSize = image.size // already in points
+        // Glow is baked into the cached image; a frame costs one image draw.
+        let (image, padding) = RasterCache.shared.neonGlow(text: text, font: settings.font,
+                                                           sizeFraction: settings.size,
+                                                           panelSize: size,
+                                                           fixedWidth: !isMarquee,
+                                                           color: UIColor(color))
+        let contentWidth = image.size.width - padding * 2
 
         var x: CGFloat = 0
         if isMarquee {
-            let range = size.width + pointSize.width
+            let range = size.width + contentWidth
             let pointsPerSecond = (6 + speed * 7) * dotPitch
             let scrolled = (time * pointsPerSecond).truncatingRemainder(dividingBy: range)
             x = size.width - scrolled
         }
 
-        let rect = CGRect(origin: CGPoint(x: x, y: 0), size: pointSize)
-        let resolved = context.resolve(Image(uiImage: image))
-
-        // Layered shadows create the glow; final pass is the bright core.
-        var glow = context
-        glow.addFilter(.shadow(color: color.opacity(0.9), radius: 18))
-        glow.addFilter(.shadow(color: color.opacity(0.7), radius: 8))
-        glow.draw(resolved, in: rect)
-        context.draw(resolved, in: rect)
+        let rect = CGRect(x: x - padding, y: -padding, size: image.size)
+        context.draw(Image(uiImage: image), in: rect)
     }
 }

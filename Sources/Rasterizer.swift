@@ -125,6 +125,8 @@ enum Rasterizer {
 }
 
 /// Memoization for rasterized content, keyed by everything that affects output.
+/// The Canvas redraws many times per second, so anything that does not change
+/// between frames (dot paths, glow images) is built once and reused.
 final class RasterCache {
     static let shared = RasterCache()
 
@@ -134,6 +136,19 @@ final class RasterCache {
         let sizeFraction: Double
         let rows: Int
         let fixedCols: Int?
+    }
+
+    private struct PathKey: Hashable {
+        let grid: GridKey
+        let pitchX: CGFloat
+        let pitchY: CGFloat
+    }
+
+    private struct UnlitKey: Hashable {
+        let cols: Int
+        let rows: Int
+        let pitchX: CGFloat
+        let pitchY: CGFloat
     }
 
     private struct NeonKey: Hashable {
@@ -148,8 +163,12 @@ final class RasterCache {
 
     private var gridKey: GridKey?
     private var gridValue: LEDGrid?
+    private var pathKey: PathKey?
+    private var litPath: Path?
+    private var unlitKey: UnlitKey?
+    private var unlitPath: Path?
     private var neonKey: NeonKey?
-    private var neonValue: UIImage?
+    private var neonValue: (image: UIImage, padding: CGFloat)?
 
     func grid(text: String, font: BoardFont, sizeFraction: Double,
               rows: Int, fixedCols: Int?) -> LEDGrid {
@@ -163,15 +182,83 @@ final class RasterCache {
         return value
     }
 
-    func neonImage(text: String, font: BoardFont, sizeFraction: Double,
-                   panelSize: CGSize, fixedWidth: Bool, color: UIColor) -> UIImage {
+    /// Grid + pre-built dot path in panel coordinates. The caller only needs to
+    /// translate the context when scrolling, instead of rebuilding thousands of
+    /// ellipses every frame.
+    func litDots(text: String, font: BoardFont, sizeFraction: Double,
+                 rows: Int, fixedCols: Int?,
+                 pitchX: CGFloat, pitchY: CGFloat) -> (grid: LEDGrid, path: Path) {
+        let value = grid(text: text, font: font, sizeFraction: sizeFraction,
+                         rows: rows, fixedCols: fixedCols)
+        let key = PathKey(grid: gridKey!, pitchX: pitchX, pitchY: pitchY)
+        if key == pathKey, let path = litPath { return (value, path) }
+
+        let dotW = pitchX * 0.72
+        let dotH = pitchY * 0.72
+        var path = Path()
+        for r in 0..<value.rows {
+            let y = CGFloat(r) * pitchY + (pitchY - dotH) / 2
+            for c in 0..<value.cols where value.lit[r * value.cols + c] {
+                path.addEllipse(in: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
+                                           y: y, width: dotW, height: dotH))
+            }
+        }
+        pathKey = key
+        litPath = path
+        return (value, path)
+    }
+
+    /// Static background of faint unlit dots; depends only on panel geometry.
+    func unlitDots(cols: Int, rows: Int, pitchX: CGFloat, pitchY: CGFloat) -> Path {
+        let key = UnlitKey(cols: cols, rows: rows, pitchX: pitchX, pitchY: pitchY)
+        if key == unlitKey, let path = unlitPath { return path }
+
+        let dotW = pitchX * 0.72
+        let dotH = pitchY * 0.72
+        var path = Path()
+        for r in 0..<rows {
+            let y = CGFloat(r) * pitchY + (pitchY - dotH) / 2
+            for c in 0..<cols {
+                path.addEllipse(in: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
+                                           y: y, width: dotW, height: dotH))
+            }
+        }
+        unlitKey = key
+        unlitPath = path
+        return path
+    }
+
+    /// Neon text with the glow baked into a single image, so each frame is just
+    /// one image draw instead of re-applying expensive shadow filters.
+    func neonGlow(text: String, font: BoardFont, sizeFraction: Double,
+                  panelSize: CGSize, fixedWidth: Bool, color: UIColor) -> (image: UIImage, padding: CGFloat) {
         let key = NeonKey(text: text, font: font, sizeFraction: sizeFraction,
                           panelW: panelSize.width, panelH: panelSize.height,
                           fixedWidth: fixedWidth, color: color)
         if key == neonKey, let value = neonValue { return value }
-        let value = Rasterizer.neonImage(text: text, font: font, sizeFraction: sizeFraction,
-                                         panelSize: panelSize, fixedWidth: fixedWidth,
-                                         color: color)
+
+        let base = Rasterizer.neonImage(text: text, font: font, sizeFraction: sizeFraction,
+                                        panelSize: panelSize, fixedWidth: fixedWidth,
+                                        color: color)
+        let padding: CGFloat = 32
+        let glowSize = CGSize(width: base.size.width + padding * 2,
+                              height: base.size.height + padding * 2)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: glowSize, format: format).image { rctx in
+            let cg = rctx.cgContext
+            let rect = CGRect(origin: CGPoint(x: padding, y: padding), size: base.size)
+            cg.setShadow(offset: .zero, blur: 22,
+                         color: color.withAlphaComponent(0.9).cgColor)
+            base.draw(in: rect)
+            cg.setShadow(offset: .zero, blur: 9,
+                         color: color.withAlphaComponent(0.8).cgColor)
+            base.draw(in: rect)
+            cg.setShadow(offset: .zero, blur: 0, color: nil)
+            base.draw(in: rect)
+        }
+        let value = (image, padding)
         neonKey = key
         neonValue = value
         return value
