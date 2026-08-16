@@ -79,7 +79,7 @@ struct LEDBoardView: View {
             : settings.textColor
 
         if settings.look == .dot {
-            drawDots(context: &context, rows: rows, screenCols: screenCols,
+            drawDots(context: &context, size: size, rows: rows, screenCols: screenCols,
                      pitchX: pitchX, pitchY: pitchY, text: renderText,
                      isMarquee: isMarquee, time: time, speed: speed, color: color)
         } else {
@@ -98,16 +98,17 @@ struct LEDBoardView: View {
 
     // MARK: - Dot matrix
 
-    private func drawDots(context: inout GraphicsContext,
+    private func drawDots(context: inout GraphicsContext, size: CGSize,
                           rows: Int, screenCols: Int,
                           pitchX: CGFloat, pitchY: CGFloat,
                           text: String, isMarquee: Bool,
                           time: Double, speed: Double, color: Color) {
-        let (grid, litPath) = RasterCache.shared.litDots(text: text, font: settings.font,
-                                                         sizeFraction: settings.size,
-                                                         rows: rows,
-                                                         fixedCols: isMarquee ? nil : screenCols,
-                                                         pitchX: pitchX, pitchY: pitchY)
+        let (grid, litImage) = RasterCache.shared.litDotsImage(text: text, font: settings.font,
+                                                               sizeFraction: settings.size,
+                                                               rows: rows,
+                                                               fixedCols: isMarquee ? nil : screenCols,
+                                                               pitchX: pitchX, pitchY: pitchY,
+                                                               color: UIColor(color))
 
         // Horizontal scroll offset (in dots) for the marquee effect.
         var textLeftEdge = 0
@@ -119,14 +120,15 @@ struct LEDBoardView: View {
         }
 
         // Faint unlit dots give the panel a realistic LED texture.
-        let unlit = RasterCache.shared.unlitDots(cols: screenCols, rows: rows,
-                                                 pitchX: pitchX, pitchY: pitchY)
-        context.fill(unlit, with: .color(color.opacity(0.07)))
+        let unlit = RasterCache.shared.unlitDotsImage(cols: screenCols, rows: rows,
+                                                      pitchX: pitchX, pitchY: pitchY)
+        context.draw(Image(uiImage: unlit), in: CGRect(origin: .zero, size: size))
 
-        // Cached dot path; scrolling is just a translation.
+        // Cached tinted dot image; scrolling is just a translation.
         var scrolledContext = context
         scrolledContext.translateBy(x: CGFloat(textLeftEdge) * pitchX, y: 0)
-        scrolledContext.fill(litPath, with: .color(color))
+        scrolledContext.draw(Image(uiImage: litImage),
+                             in: CGRect(origin: .zero, size: litImage.size))
     }
 
     // MARK: - Neon glow

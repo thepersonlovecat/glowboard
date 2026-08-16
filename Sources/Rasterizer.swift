@@ -138,10 +138,11 @@ final class RasterCache {
         let fixedCols: Int?
     }
 
-    private struct PathKey: Hashable {
+    private struct DotImageKey: Hashable {
         let grid: GridKey
         let pitchX: CGFloat
         let pitchY: CGFloat
+        let color: UIColor
     }
 
     private struct UnlitKey: Hashable {
@@ -163,10 +164,10 @@ final class RasterCache {
 
     private var gridKey: GridKey?
     private var gridValue: LEDGrid?
-    private var pathKey: PathKey?
-    private var litPath: Path?
+    private var dotImageKey: DotImageKey?
+    private var litImage: UIImage?
     private var unlitKey: UnlitKey?
-    private var unlitPath: Path?
+    private var unlitImage: UIImage?
     private var neonKey: NeonKey?
     private var neonValue: (image: UIImage, padding: CGFloat)?
 
@@ -182,50 +183,67 @@ final class RasterCache {
         return value
     }
 
-    /// Grid + pre-built dot path in panel coordinates. The caller only needs to
-    /// translate the context when scrolling, instead of rebuilding thousands of
-    /// ellipses every frame.
-    func litDots(text: String, font: BoardFont, sizeFraction: Double,
-                 rows: Int, fixedCols: Int?,
-                 pitchX: CGFloat, pitchY: CGFloat) -> (grid: LEDGrid, path: Path) {
+    /// Lit dots baked into a tinted image. Each frame is then a single image
+    /// draw (translated when scrolling) instead of rasterizing thousands of
+    /// ellipses over and over.
+    func litDotsImage(text: String, font: BoardFont, sizeFraction: Double,
+                      rows: Int, fixedCols: Int?,
+                      pitchX: CGFloat, pitchY: CGFloat,
+                      color: UIColor) -> (grid: LEDGrid, image: UIImage) {
         let value = grid(text: text, font: font, sizeFraction: sizeFraction,
                          rows: rows, fixedCols: fixedCols)
-        let key = PathKey(grid: gridKey!, pitchX: pitchX, pitchY: pitchY)
-        if key == pathKey, let path = litPath { return (value, path) }
+        let key = DotImageKey(grid: gridKey!, pitchX: pitchX, pitchY: pitchY, color: color)
+        if key == dotImageKey, let image = litImage { return (value, image) }
 
         let dotW = pitchX * 0.72
         let dotH = pitchY * 0.72
-        var path = Path()
+        let dots = UIBezierPath()
         for r in 0..<value.rows {
             let y = CGFloat(r) * pitchY + (pitchY - dotH) / 2
             for c in 0..<value.cols where value.lit[r * value.cols + c] {
-                path.addEllipse(in: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
-                                           y: y, width: dotW, height: dotH))
+                dots.append(UIBezierPath(ovalIn: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
+                                                        y: y, width: dotW, height: dotH)))
             }
         }
-        pathKey = key
-        litPath = path
-        return (value, path)
+        let size = CGSize(width: CGFloat(value.cols) * pitchX,
+                          height: CGFloat(value.rows) * pitchY)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            color.setFill()
+            dots.fill()
+        }
+        dotImageKey = key
+        litImage = image
+        return (value, image)
     }
 
     /// Static background of faint unlit dots; depends only on panel geometry.
-    func unlitDots(cols: Int, rows: Int, pitchX: CGFloat, pitchY: CGFloat) -> Path {
+    func unlitDotsImage(cols: Int, rows: Int, pitchX: CGFloat, pitchY: CGFloat) -> UIImage {
         let key = UnlitKey(cols: cols, rows: rows, pitchX: pitchX, pitchY: pitchY)
-        if key == unlitKey, let path = unlitPath { return path }
+        if key == unlitKey, let image = unlitImage { return image }
 
         let dotW = pitchX * 0.72
         let dotH = pitchY * 0.72
-        var path = Path()
+        let dots = UIBezierPath()
         for r in 0..<rows {
             let y = CGFloat(r) * pitchY + (pitchY - dotH) / 2
             for c in 0..<cols {
-                path.addEllipse(in: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
-                                           y: y, width: dotW, height: dotH))
+                dots.append(UIBezierPath(ovalIn: CGRect(x: CGFloat(c) * pitchX + (pitchX - dotW) / 2,
+                                                        y: y, width: dotW, height: dotH)))
             }
         }
+        let size = CGSize(width: CGFloat(cols) * pitchX,
+                          height: CGFloat(rows) * pitchY)
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.withAlphaComponent(0.06).setFill()
+            dots.fill()
+        }
         unlitKey = key
-        unlitPath = path
-        return path
+        unlitImage = image
+        return image
     }
 
     /// Neon text with the glow baked into a single image, so each frame is just
